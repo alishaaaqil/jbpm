@@ -90,6 +90,8 @@ public class ProcessRuntimeImpl implements InternalProcessRuntime {
 	private TimerManager timerManager;
 	private ProcessEventSupport processEventSupport;
 
+    private transient boolean startTimersInitialized = false;
+
 	public ProcessRuntimeImpl(InternalKnowledgeRuntime kruntime) {
 		this.kruntime = kruntime;
         TimerService timerService = kruntime.getTimerService();
@@ -103,28 +105,43 @@ public class ProcessRuntimeImpl implements InternalProcessRuntime {
 		timerManager = new TimerManager(kruntime, kruntime.getTimerService());
         processEventSupport = new ProcessEventSupport();
         if (isActive()) {
-            initProcessEventListeners();                   
-            initStartTimers();
+            initProcessEventListeners();                  
+
         }
         initProcessActivationListener(); 
 	}
 	
-	public void initStartTimers() {
-	    // if there is no service implementation registered or is cluster coordinator we should start timers
-        if(ServiceRegistry.ifSupported(ClusterAwareService.class, cluster -> !cluster.isCoordinator()).orElse(Boolean.FALSE)) {
-            return;
-        }
+	public synchronized void initStartTimers() {
+    if (startTimersInitialized) {
+        return;
+    }
 
-        KieBase kbase = kruntime.getKieBase();
-        Collection<Process> processes = kbase.getProcesses();
-        for (Process process : processes) {
-            RuleFlowProcess p = (RuleFlowProcess) process;
-            List<StartNode> startNodes = p.getTimerStart();
-            if (startNodes != null && !startNodes.isEmpty()) {
-                kruntime.queueWorkingMemoryAction(new RegisterStartTimerAction(p.getId(), startNodes, this.timerManager));
-            }
+    // cluster safety – keep as-is
+    if (ServiceRegistry.ifSupported(ClusterAwareService.class,
+            cluster -> !cluster.isCoordinator()).orElse(Boolean.FALSE)) {
+        return;
+    }
+
+    KieBase kbase = kruntime.getKieBase();
+    Collection<Process> processes = kbase.getProcesses();
+
+    for (Process process : processes) {
+        RuleFlowProcess p = (RuleFlowProcess) process;
+        List<StartNode> startNodes = p.getTimerStart();
+        if (startNodes != null && !startNodes.isEmpty()) {
+            kruntime.queueWorkingMemoryAction(
+                new RegisterStartTimerAction(
+                    p.getId(),
+                    startNodes,
+                    this.timerManager
+                )
+            );
         }
     }
+
+    startTimersInitialized = true;
+}
+
 
 	public ProcessRuntimeImpl(InternalWorkingMemory workingMemory) {
         TimerService timerService = workingMemory.getTimerService();
@@ -138,8 +155,8 @@ public class ProcessRuntimeImpl implements InternalProcessRuntime {
 		timerManager = new TimerManager(kruntime, kruntime.getTimerService());
         processEventSupport = new ProcessEventSupport();
         if (isActive()) {
-            initProcessEventListeners();                   
-            initStartTimers();
+            initProcessEventListeners();                
+              
         }
         initProcessActivationListener();
 	}
@@ -251,6 +268,7 @@ public class ProcessRuntimeImpl implements InternalProcessRuntime {
     public ProcessInstance startProcessInstance(long processInstanceId, String trigger, AgendaFilter agendaFilter) {
     	try {
             kruntime.startOperation();
+             initStartTimers(); 
 
             ProcessInstance processInstance = getProcessInstance(processInstanceId);
             ((org.jbpm.process.instance.ProcessInstance) processInstance).configureSLA();
